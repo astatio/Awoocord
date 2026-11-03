@@ -1,6 +1,6 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
-version = "8.18.2"
+version = "8.18.3"
 description = "Beta backport of SlashCommandsFix. Code improved by Claude"
 
 aliucord {
@@ -8,6 +8,10 @@ aliucord {
     author("astatio", hyperlink = false)
 
     changelog.set("""
+        # 8.18.3
+        * Fix 429 Too Many Requests loops: honor Retry-After, keep using cached commands while rate limited, back off after failures
+        * If localized names can't be loaded, show default names and retry in 30 s
+
         # 8.18.2
         * Fix localized commands failing with "interaction failed": names are shown in your language but sent in the bot's default language
         * Credit astatio as co-author of this fixed build
