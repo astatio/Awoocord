@@ -57,7 +57,11 @@ class Permissions {
         var everyoneRoleId = guildId;
         var defaultRolePermission = this.roles.getOrDefault(everyoneRoleId, defaultMemberPermission);
         var rolePermission = this.calculateRolePermission(roleIds, defaultRolePermission);
-        var userPermission = this.user.orElse(defaultMemberPermission);
+        // A user-specific override takes precedence over role overrides; only fall back
+        // to roles (then @everyone, then the default) when there is none. Previously the
+        // two were OR'd, so role/@everyone denials were bypassed whenever the default
+        // allowed the command, and a user-level deny was bypassed by any allowed role.
+        var userPermission = this.user.orElse(rolePermission);
         var administratorPermission = PermissionUtils.canAndIsElevated(
             Permission.ADMINISTRATOR,
             memberPermissions,
@@ -65,7 +69,7 @@ class Permissions {
             guild.getMfaLevel()
         );
 
-        return administratorPermission || (channelPermission && (userPermission || rolePermission));
+        return administratorPermission || (channelPermission && userPermission);
     }
 
     private boolean calculateRolePermission(List<Long> roleIds, boolean defaultPermission) {
