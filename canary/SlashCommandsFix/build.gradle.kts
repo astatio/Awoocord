@@ -1,10 +1,16 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
-version = "8.18.1"
+version = "8.18.2"
 description = "Beta backport of SlashCommandsFix"
 
 aliucord {
+    // Added after the shared "cilly" author from the root build file
+    author("astatio", hyperlink = false)
+
     changelog.set("""
+        # 8.18.2
+        * Credit astatio as co-author of this fixed build
+
         # 8.18.1
         * Fix role/@everyone denials being ignored in command permission checks
         * No more network requests while the command list is rendered
