@@ -24,8 +24,6 @@ import java.util.concurrent.ConcurrentHashMap;
 final class ApplicationIndexCache {
     /** Entries older than this are refetched; covers changes that have no gateway event (e.g. user-installed apps). */
     static final long MAX_AGE_MS = 10 * 60 * 1000;
-    /** Max age of a degraded entry (e.g. localized names couldn't be loaded), so it is retried soon. */
-    static final long RETRY_AGE_MS = 30 * 1000;
 
     private static final class Entry {
         final ApplicationIndex index;

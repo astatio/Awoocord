@@ -53,7 +53,7 @@ final class Diagnostics {
                 var prefix = "/" + command.optString("name");
                 if (isLocalized(command)) {
                     localized++;
-                    addExample(examples, prefix + " -> \"" + command.optString("name_localized") + "\" (id " + command.optString("id") + ")");
+                    addExample(examples, prefix + " (default \"" + DefaultNames.defaultName(command) + "\", id " + command.optString("id") + ")");
                 }
                 localized += collectOptions(command.optJSONArray("options"), prefix, optionKeys, examples);
             }
@@ -61,7 +61,7 @@ final class Diagnostics {
             logger.info("[diag] " + endpoint + ": " + commands.length() + " commands, " + localized + " localized names"
                 + "\n  command keys: " + commandKeys
                 + "\n  option keys: " + optionKeys
-                + (examples.isEmpty() ? "" : "\n  name -> name_localized:\n    " + String.join("\n    ", examples)));
+                + (examples.isEmpty() ? "" : "\n  localized names (default in parentheses):\n    " + String.join("\n    ", examples)));
         } catch (Throwable e) {
             logger.error("[diag] failed to inspect " + endpoint, e);
         }
@@ -77,7 +77,7 @@ final class Diagnostics {
             var path = prefix + " " + option.optString("name");
             if (isLocalized(option)) {
                 localized++;
-                addExample(examples, path + " -> \"" + option.optString("name_localized") + "\"");
+                addExample(examples, path + " (default \"" + DefaultNames.defaultName(option) + "\")");
             }
             localized += collectOptions(option.optJSONArray("options"), path, optionKeys, examples);
         }
@@ -85,9 +85,7 @@ final class Diagnostics {
     }
 
     private static boolean isLocalized(JSONObject object) {
-        return object.has("name_localized")
-            && !object.isNull("name_localized")
-            && !object.optString("name_localized").equals(object.optString("name"));
+        return !DefaultNames.defaultName(object).equals(object.optString("name"));
     }
 
     private static void addExample(List<String> examples, String example) {

@@ -34,7 +34,6 @@ import com.discord.utilities.error.Error;
 import com.discord.utilities.messagesend.MessageResult;
 import com.discord.utilities.permissions.PermissionUtils;
 import com.discord.restapi.RestAPIParams;
-import com.discord.utilities.rest.RestAPI;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -45,7 +44,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.TimeZone;
 import kotlin.jvm.functions.Function0;
 import kotlin.jvm.functions.Function1;
 
@@ -296,7 +294,7 @@ final class Patches {
             );
             this.defaultNames = defaultNames;
         } catch (Throwable e) {
-            this.logger.error("Localized command names unavailable; showing default names instead", e);
+            this.logger.error("Can't rewrite command names when sending; showing default names instead", e);
         }
 
         GatewayAPI.onEvent("GUILD_APPLICATION_COMMAND_INDEX_UPDATE", ApiGuildApplicationCommandIndexUpdate.class, guildApplicationCommandIndexUpdate -> {
@@ -367,10 +365,9 @@ final class Patches {
             }
 
             var generation = this.applicationIndexCache.generation(key);
-            // Default (unlocalized) names: what interactions must contain
-            String defaultJson;
+            String json;
             try {
-                defaultJson = this.fetchText(Patches.newUnlocalizedDiscordRNRequest(key), key);
+                json = this.fetchText(Http.Request.newDiscordRNRequest(key), key);
             } catch (IOException e) {
                 if (!(e instanceof RateLimitedException)) {
                     this.applicationIndexCache.block(key, FAILURE_BACKOFF_MS, false);
@@ -378,50 +375,28 @@ final class Patches {
                 if (stale.isPresent()) return stale.get();
                 throw e;
             }
-
-            var json = defaultJson;
-            var maxAgeMs = ApplicationIndexCache.MAX_AGE_MS;
-            if (this.defaultNames != null) {
-                // Localized names for display; DefaultNames swaps them back when sending.
-                // If they can't be loaded, show the default names (which work) and retry soon.
-                try {
-                    var localizedJson = this.fetchText(Http.Request.newDiscordRNRequest(key), key);
-                    this.defaultNames.update(localizedJson, defaultJson);
-                    json = localizedJson;
-                } catch (Throwable e) {
-                    maxAgeMs = ApplicationIndexCache.RETRY_AGE_MS;
-                    if (!(e instanceof RateLimitedException)) {
-                        this.logger.error("Failed to load localized command names; showing default names", e);
-                    }
-                }
-            }
-            var applicationIndex = GsonUtils.fromJson(GsonUtils.getGsonRestApi(), json, ApiApplicationIndex.class)
-                .toModel();
-            this.applicationIndexCache.put(key, applicationIndex, generation, maxAgeMs);
             Diagnostics.logIndexShape(this.logger, key, json);
+
+            // `name` is localized and `name_default` is what interactions must contain.
+            // Show localized names and let DefaultNames swap them when sending; if that
+            // rewrite isn't available, show (and therefore send) the default names.
+            var displayJson = json;
+            try {
+                if (this.defaultNames != null) {
+                    this.defaultNames.update(json);
+                } else {
+                    displayJson = DefaultNames.withDefaultNames(json);
+                }
+            } catch (Throwable e) {
+                this.logger.error("Failed to read default command names", e);
+            }
+            var applicationIndex = GsonUtils.fromJson(GsonUtils.getGsonRestApi(), displayJson, ApiApplicationIndex.class)
+                .toModel();
+            this.applicationIndexCache.put(key, applicationIndex, generation, ApplicationIndexCache.MAX_AGE_MS);
             return applicationIndex;
         }
     }
 
-    /**
-     * Same as {@link Http.Request#newDiscordRNRequest(String)}, minus the locale headers
-     * (Accept-Language, X-Discord-Locale).
-     * <p>
-     * With those headers, Discord returns translated command and option names in
-     * {@code name}. This Discord version has no localization support and sends
-     * {@code name} back verbatim when running a command, and Discord rejects
-     * translated names ("interaction failed"). Without them we get the default
-     * names, which is what interactions must contain.
-     */
-    private static Http.Request newUnlocalizedDiscordRNRequest(String route) throws IOException {
-        var headersProvider = RestAPI.AppHeadersProvider.INSTANCE;
-        return new Http.Request("https://discord.com/api/v9" + route, "GET")
-            .setHeader("User-Agent", RNSuperProperties.userAgent)
-            .setHeader("X-Super-Properties", RNSuperProperties.getSuperPropertiesBase64())
-            .setHeader("Accept", "*/*")
-            .setHeader("Authorization", headersProvider.getAuthToken())
-            .setHeader("X-Discord-Timezone", TimeZone.getDefault().getID());
-    }
 
     /** Pause after a failed request (other than a rate limit, which says how long to wait). */
     private static final long FAILURE_BACKOFF_MS = 5 * 1000;
