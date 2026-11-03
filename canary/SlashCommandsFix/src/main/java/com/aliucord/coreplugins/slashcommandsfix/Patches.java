@@ -33,6 +33,8 @@ import com.discord.stores.StoreStream;
 import com.discord.utilities.error.Error;
 import com.discord.utilities.messagesend.MessageResult;
 import com.discord.utilities.permissions.PermissionUtils;
+import com.discord.utilities.rest.RestAPI;
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -42,6 +44,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TimeZone;
 import kotlin.jvm.functions.Function0;
 import kotlin.jvm.functions.Function1;
 
@@ -315,7 +318,7 @@ final class Patches {
             }
 
             var generation = this.applicationIndexCache.generation(key);
-            var json = Http.Request.newDiscordRNRequest(key)
+            var json = Patches.newUnlocalizedDiscordRNRequest(key)
                 .execute()
                 .text();
             var applicationIndex = GsonUtils.fromJson(GsonUtils.getGsonRestApi(), json, ApiApplicationIndex.class)
@@ -324,6 +327,26 @@ final class Patches {
             Diagnostics.logIndexShape(this.logger, key, json);
             return applicationIndex;
         }
+    }
+
+    /**
+     * Same as {@link Http.Request#newDiscordRNRequest(String)}, minus the locale headers
+     * (Accept-Language, X-Discord-Locale).
+     * <p>
+     * With those headers, Discord returns translated command and option names in
+     * {@code name}. This Discord version has no localization support and sends
+     * {@code name} back verbatim when running a command, so a translated name makes
+     * Discord reject the interaction ("interaction failed"). Without them we get the
+     * default names, which is what the interaction must contain.
+     */
+    private static Http.Request newUnlocalizedDiscordRNRequest(String route) throws IOException {
+        var headersProvider = RestAPI.AppHeadersProvider.INSTANCE;
+        return new Http.Request("https://discord.com/api/v9" + route, "GET")
+            .setHeader("User-Agent", RNSuperProperties.userAgent)
+            .setHeader("X-Super-Properties", RNSuperProperties.getSuperPropertiesBase64())
+            .setHeader("Accept", "*/*")
+            .setHeader("Authorization", headersProvider.getAuthToken())
+            .setHeader("X-Discord-Timezone", TimeZone.getDefault().getID());
     }
 
     private void invalidateApplicationIndex(ApplicationIndexSource source) {
