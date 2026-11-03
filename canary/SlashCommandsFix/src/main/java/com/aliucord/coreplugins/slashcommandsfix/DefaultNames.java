@@ -19,11 +19,11 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Lets the client show localized command names while sending the default ones.
  * <p>
- * This Discord version has no localization support: whatever is in a command's
- * {@code name} (and its options' names) is both displayed and sent back when the
- * command runs. Discord only accepts the default names in interactions, so we fetch
- * the command index twice (localized for display, unlocalized for sending), map
- * localized names to default ones per command, and rewrite the outgoing payload.
+ * The command index returns the localized name in {@code name} and the default one in
+ * {@code name_default} (for commands and options). This Discord version predates
+ * localization: whatever is in {@code name} is both displayed and sent back when the
+ * command runs, but Discord only accepts default names in interactions. So we record
+ * localized-to-default mappings per command and rewrite the outgoing payload.
  * <p>
  * JSON is read with org.json and Discord's classes through field names, because
  * Discord's bundled Gson and getters are obfuscated.
@@ -43,48 +43,65 @@ final class DefaultNames {
     /** Keyed by command id (as sent in the interaction). */
     private final Map<String, Node> commands = new ConcurrentHashMap<>();
 
-    /**
-     * Records the default names of every command in {@code localizedJson}, matching
-     * commands by id and options by position (localization doesn't reorder them).
-     */
-    void update(String localizedJson, String defaultJson) throws Exception {
-        var localizedCommands = new JSONObject(localizedJson).optJSONArray("application_commands");
-        var defaultCommands = new JSONObject(defaultJson).optJSONArray("application_commands");
-        if (localizedCommands == null || defaultCommands == null) return;
-
-        var defaultsById = new HashMap<String, JSONObject>();
-        for (int i = 0; i < defaultCommands.length(); i++) {
-            var command = defaultCommands.optJSONObject(i);
-            if (command != null) defaultsById.put(command.optString("id"), command);
-        }
-
-        for (int i = 0; i < localizedCommands.length(); i++) {
-            var localized = localizedCommands.optJSONObject(i);
-            if (localized == null) continue;
-            var id = localized.optString("id");
-            var defaults = defaultsById.get(id);
-            if (defaults == null) continue;
-            commands.put(id, new Node(
-                defaults.optString("name"),
-                align(localized.optJSONArray("options"), defaults.optJSONArray("options"))
+    /** Records the default names of every command (and its options) in an index response. */
+    void update(String json) throws Exception {
+        var commands = new JSONObject(json).optJSONArray("application_commands");
+        if (commands == null) return;
+        for (int i = 0; i < commands.length(); i++) {
+            var command = commands.optJSONObject(i);
+            if (command == null) continue;
+            this.commands.put(command.optString("id"), new Node(
+                defaultName(command),
+                options(command.optJSONArray("options"))
             ));
         }
     }
 
-    private static Map<String, Node> align(JSONArray localized, JSONArray defaults) {
-        if (localized == null || defaults == null) return Collections.emptyMap();
+    private static Map<String, Node> options(JSONArray options) {
+        if (options == null) return Collections.emptyMap();
         var result = new HashMap<String, Node>();
-        for (int i = 0; i < Math.min(localized.length(), defaults.length()); i++) {
-            var lo = localized.optJSONObject(i);
-            var de = defaults.optJSONObject(i);
-            // Positions should always line up; bail out on this option if they somehow don't
-            if (lo == null || de == null || lo.optInt("type") != de.optInt("type")) continue;
-            result.put(lo.optString("name"), new Node(
-                de.optString("name"),
-                align(lo.optJSONArray("options"), de.optJSONArray("options"))
+        for (int i = 0; i < options.length(); i++) {
+            var option = options.optJSONObject(i);
+            if (option == null) continue;
+            result.put(option.optString("name"), new Node(
+                defaultName(option),
+                options(option.optJSONArray("options"))
             ));
         }
         return result;
+    }
+
+    /** {@code name_default} if present, else {@code name} (not localized). */
+    static String defaultName(JSONObject object) {
+        if (object.has("name_default") && !object.isNull("name_default")) {
+            var name = object.optString("name_default");
+            if (!name.isEmpty()) return name;
+        }
+        return object.optString("name");
+    }
+
+    /**
+     * Returns {@code json} with every command and option {@code name} replaced by its default,
+     * for when the send-time rewrite isn't available (then default names must be displayed).
+     */
+    static String withDefaultNames(String json) throws Exception {
+        var root = new JSONObject(json);
+        var commands = root.optJSONArray("application_commands");
+        if (commands == null) return json;
+        for (int i = 0; i < commands.length(); i++) {
+            useDefaultNames(commands.optJSONObject(i));
+        }
+        return root.toString();
+    }
+
+    private static void useDefaultNames(JSONObject object) throws Exception {
+        if (object == null) return;
+        object.put("name", defaultName(object));
+        var options = object.optJSONArray("options");
+        if (options == null) return;
+        for (int i = 0; i < options.length(); i++) {
+            useDefaultNames(options.optJSONObject(i));
+        }
     }
 
     // Fields of com.discord.api.commands.ApplicationCommandData / ApplicationCommandValue

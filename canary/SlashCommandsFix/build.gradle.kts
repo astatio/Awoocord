@@ -1,6 +1,6 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
-version = "8.18.3"
+version = "8.18.4"
 description = "Beta backport of SlashCommandsFix. Code improved by Claude"
 
 aliucord {
@@ -8,6 +8,10 @@ aliucord {
     author("astatio", hyperlink = false)
 
     changelog.set("""
+        # 8.18.4
+        * Fix localized options still failing (INTERACTION_APPLICATION_COMMAND_OPTION_INVALID): send the name_default Discord provides
+        * Fetch each command list once instead of twice (fewer rate limits)
+
         # 8.18.3
         * Fix 429 Too Many Requests loops: honor Retry-After, keep using cached commands while rate limited, back off after failures
         * If localized names can't be loaded, show default names and retry in 30 s
