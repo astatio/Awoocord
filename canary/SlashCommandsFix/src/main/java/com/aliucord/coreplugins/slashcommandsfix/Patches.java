@@ -115,6 +115,10 @@ final class Patches {
                 try {
                     var applicationIndexSource = Patches.applicationIndexSourceFromContext(this_.$guildId, storeChannelsSelected);
                     this.passCommandData(this_.this$0, applicationIndexSource, RequestSource.BROWSE);
+                } catch (RateLimitedException e) {
+                    // Already logged once when the limit was hit; don't add more requests meanwhile
+                    param.setResult(null);
+                    return;
                 } catch (Throwable e) {
                     // Let Discord's original request run instead
                     this.logger.error("Failed to load application commands", e);
@@ -139,6 +143,10 @@ final class Patches {
                     var applicationIndexSource = Patches.applicationIndexSourceFromContext(this_.$guildId, storeChannelsSelected);
                     storeApplicationCommandsQueryField.set(this_.this$0, this_.$query);
                     this.passCommandData(this_.this$0, applicationIndexSource, RequestSource.QUERY);
+                } catch (RateLimitedException e) {
+                    // Already logged once when the limit was hit; don't add more requests meanwhile
+                    param.setResult(null);
+                    return;
                 } catch (Throwable e) {
                     // Let Discord's original request run instead
                     this.logger.error("Failed to query application commands", e);
@@ -303,7 +311,12 @@ final class Patches {
         if (applicationIndexSource.isPresent()) {
             applicationIndexes.add(this.requestApplicationIndex(applicationIndexSource.get()));
         }
-        applicationIndexes.add(this.requestApplicationIndex(new ApplicationIndexSourceUser()));
+        try {
+            applicationIndexes.add(this.requestApplicationIndex(new ApplicationIndexSourceUser()));
+        } catch (IOException e) {
+            // User-installed apps unavailable right now; still show the guild/DM commands
+            if (applicationIndexes.isEmpty()) throw e;
+        }
         var applicationIndex = new ApplicationIndex(applicationIndexes);
         applicationIndex
             .applicationCommands
@@ -345,27 +358,46 @@ final class Patches {
                 return cached.get();
             }
 
+            // Whatever we already have (even if outdated) beats hammering Discord
+            var stale = this.applicationIndexCache.getAny(key);
+            var blockedForMs = this.applicationIndexCache.blockedForMs(key);
+            if (blockedForMs > 0) {
+                if (stale.isPresent()) return stale.get();
+                throw new RateLimitedException(key, blockedForMs);
+            }
+
             var generation = this.applicationIndexCache.generation(key);
             // Default (unlocalized) names: what interactions must contain
-            var defaultJson = Patches.newUnlocalizedDiscordRNRequest(key)
-                .execute()
-                .text();
+            String defaultJson;
+            try {
+                defaultJson = this.fetchText(Patches.newUnlocalizedDiscordRNRequest(key), key);
+            } catch (IOException e) {
+                if (!(e instanceof RateLimitedException)) {
+                    this.applicationIndexCache.block(key, FAILURE_BACKOFF_MS, false);
+                }
+                if (stale.isPresent()) return stale.get();
+                throw e;
+            }
+
             var json = defaultJson;
+            var maxAgeMs = ApplicationIndexCache.MAX_AGE_MS;
             if (this.defaultNames != null) {
-                // Localized names for display; DefaultNames swaps them back when sending
-                var localizedJson = Http.Request.newDiscordRNRequest(key)
-                    .execute()
-                    .text();
+                // Localized names for display; DefaultNames swaps them back when sending.
+                // If they can't be loaded, show the default names (which work) and retry soon.
                 try {
+                    var localizedJson = this.fetchText(Http.Request.newDiscordRNRequest(key), key);
                     this.defaultNames.update(localizedJson, defaultJson);
                     json = localizedJson;
                 } catch (Throwable e) {
-                    this.logger.error("Failed to map localized command names; showing default names", e);
+                    maxAgeMs = ApplicationIndexCache.RETRY_AGE_MS;
+                    if (!(e instanceof RateLimitedException)) {
+                        this.logger.error("Failed to load localized command names; showing default names", e);
+                    }
                 }
             }
             var applicationIndex = GsonUtils.fromJson(GsonUtils.getGsonRestApi(), json, ApiApplicationIndex.class)
                 .toModel();
-            this.applicationIndexCache.put(key, applicationIndex, generation);
+            this.applicationIndexCache.put(key, applicationIndex, generation, maxAgeMs);
             Diagnostics.logIndexShape(this.logger, key, json);
             return applicationIndex;
         }
@@ -389,6 +421,40 @@ final class Patches {
             .setHeader("Accept", "*/*")
             .setHeader("Authorization", headersProvider.getAuthToken())
             .setHeader("X-Discord-Timezone", TimeZone.getDefault().getID());
+    }
+
+    /** Pause after a failed request (other than a rate limit, which says how long to wait). */
+    private static final long FAILURE_BACKOFF_MS = 5 * 1000;
+
+    /**
+     * Executes an index request. On 429, honors Retry-After by blocking further requests
+     * to that index (or all of them, for a global limit) and throws RateLimitedException.
+     */
+    private String fetchText(Http.Request request, String key) throws IOException {
+        var response = request.execute();
+        if (response.statusCode == 429) {
+            var retryAfterMs = Patches.retryAfterMs(request);
+            var global = "true".equalsIgnoreCase(request.conn.getHeaderField("X-RateLimit-Global"));
+            response.close();
+            this.applicationIndexCache.block(key, retryAfterMs, global);
+            this.logger.warn("Rate limited on " + key + (global ? " (global)" : "") + "; pausing these requests for " + retryAfterMs + " ms");
+            throw new RateLimitedException(key, retryAfterMs);
+        }
+        return response.text();
+    }
+
+    /** Retry-After in ms from a 429 response, clamped to [1 s, 10 min]; 5 s if absent. */
+    private static long retryAfterMs(Http.Request request) {
+        for (var header : new String[] { "Retry-After", "X-RateLimit-Reset-After" }) {
+            var value = request.conn.getHeaderField(header);
+            if (value == null) continue;
+            try {
+                var ms = (long) Math.ceil(Double.parseDouble(value.trim()) * 1000);
+                return Math.max(1000, Math.min(ms, 10 * 60 * 1000));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 5 * 1000;
     }
 
     private void invalidateApplicationIndex(ApplicationIndexSource source) {
