@@ -1,10 +1,18 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
-version = "8.18.1"
-description = "Beta backport of SlashCommandsFix"
+version = "8.18.2"
+description = "Beta backport of SlashCommandsFix. Code improved by Claude"
 
 aliucord {
+    // Added after the shared "cilly" author from the root build file
+    author("astatio", hyperlink = false)
+
     changelog.set("""
+        # 8.18.2
+        * Fix localized commands failing with "interaction failed": names are shown in your language but sent in the bot's default language
+        * Credit astatio as co-author of this fixed build
+        * Log diagnostics for failed commands and localized command names (debug log, tagged [diag])
+
         # 8.18.1
         * Fix role/@everyone denials being ignored in command permission checks
         * No more network requests while the command list is rendered
