@@ -9,7 +9,7 @@ aliucord {
 
     changelog.set("""
         # 8.18.2
-        * Fix localized commands failing with "interaction failed" (command names now stay in the bot's default language)
+        * Fix localized commands failing with "interaction failed": names are shown in your language but sent in the bot's default language
         * Credit astatio as co-author of this fixed build
         * Log diagnostics for failed commands and localized command names (debug log, tagged [diag])
 

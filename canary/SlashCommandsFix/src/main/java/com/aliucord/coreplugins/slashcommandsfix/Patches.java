@@ -33,6 +33,7 @@ import com.discord.stores.StoreStream;
 import com.discord.utilities.error.Error;
 import com.discord.utilities.messagesend.MessageResult;
 import com.discord.utilities.permissions.PermissionUtils;
+import com.discord.restapi.RestAPIParams;
 import com.discord.utilities.rest.RestAPI;
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -62,6 +63,8 @@ final class Patches {
     private Field skemaErrorItemCodeField;
     private Field skemaErrorItemMessageField;
     private Field storeApplicationCommandsBuiltInCommandsProviderField;
+    /** Null if the send-time name rewrite couldn't be installed; then only default names are used. */
+    private DefaultNames defaultNames;
 
     Patches(Logger logger) throws Throwable {
         this.logger = logger;
@@ -263,6 +266,31 @@ final class Patches {
             })
         );
 
+        // Show localized command names, but send the default ones (see DefaultNames).
+        // Every interaction this client sends (commands and autocomplete) is built here.
+        try {
+            var defaultNames = new DefaultNames(
+                com.discord.api.commands.ApplicationCommandData.class,
+                com.discord.api.commands.ApplicationCommandValue.class
+            );
+            Patcher.addPatch(
+                RestAPIParams.ApplicationCommand.class.getDeclaredConstructor(
+                    long.class, String.class, String.class, String.class,
+                    com.discord.api.commands.ApplicationCommandData.class, String.class, String.class
+                ),
+                new PreHook(param -> {
+                    try {
+                        defaultNames.applyTo(param.args[4]);
+                    } catch (Throwable e) {
+                        this.logger.error("Failed to restore default command names", e);
+                    }
+                })
+            );
+            this.defaultNames = defaultNames;
+        } catch (Throwable e) {
+            this.logger.error("Localized command names unavailable; showing default names instead", e);
+        }
+
         GatewayAPI.onEvent("GUILD_APPLICATION_COMMAND_INDEX_UPDATE", ApiGuildApplicationCommandIndexUpdate.class, guildApplicationCommandIndexUpdate -> {
             this.invalidateApplicationIndex(new ApplicationIndexSourceGuild(guildApplicationCommandIndexUpdate.guildId));
             return null;
@@ -318,9 +346,23 @@ final class Patches {
             }
 
             var generation = this.applicationIndexCache.generation(key);
-            var json = Patches.newUnlocalizedDiscordRNRequest(key)
+            // Default (unlocalized) names: what interactions must contain
+            var defaultJson = Patches.newUnlocalizedDiscordRNRequest(key)
                 .execute()
                 .text();
+            var json = defaultJson;
+            if (this.defaultNames != null) {
+                // Localized names for display; DefaultNames swaps them back when sending
+                var localizedJson = Http.Request.newDiscordRNRequest(key)
+                    .execute()
+                    .text();
+                try {
+                    this.defaultNames.update(localizedJson, defaultJson);
+                    json = localizedJson;
+                } catch (Throwable e) {
+                    this.logger.error("Failed to map localized command names; showing default names", e);
+                }
+            }
             var applicationIndex = GsonUtils.fromJson(GsonUtils.getGsonRestApi(), json, ApiApplicationIndex.class)
                 .toModel();
             this.applicationIndexCache.put(key, applicationIndex, generation);
@@ -335,9 +377,9 @@ final class Patches {
      * <p>
      * With those headers, Discord returns translated command and option names in
      * {@code name}. This Discord version has no localization support and sends
-     * {@code name} back verbatim when running a command, so a translated name makes
-     * Discord reject the interaction ("interaction failed"). Without them we get the
-     * default names, which is what the interaction must contain.
+     * {@code name} back verbatim when running a command, and Discord rejects
+     * translated names ("interaction failed"). Without them we get the default
+     * names, which is what interactions must contain.
      */
     private static Http.Request newUnlocalizedDiscordRNRequest(String route) throws IOException {
         var headersProvider = RestAPI.AppHeadersProvider.INSTANCE;
