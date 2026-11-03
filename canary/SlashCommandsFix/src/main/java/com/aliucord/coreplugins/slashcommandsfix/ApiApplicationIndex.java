@@ -21,12 +21,16 @@ class ApiApplicationIndex {
 
     public ApplicationIndex toModel() {
         var applications = new HashMap<Long, Application>();
-        for (var application: this.applications) {
-            applications.put(application.id, application.toModel());
+        if (this.applications != null) {
+            for (var application: this.applications) {
+                applications.put(application.id, application.toModel());
+            }
         }
         var applicationCommands = new HashMap<Long, RemoteApplicationCommand>();
-        for (var applicationCommand: this.applicationCommands) {
-            applicationCommands.put(applicationCommand.id, applicationCommand.toModel());
+        if (this.applicationCommands != null) {
+            for (var applicationCommand: this.applicationCommands) {
+                applicationCommands.put(applicationCommand.id, applicationCommand.toModel());
+            }
         }
 
         return new ApplicationIndex(applications, applicationCommands);

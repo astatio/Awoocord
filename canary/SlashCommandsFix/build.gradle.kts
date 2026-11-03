@@ -1,10 +1,16 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
-version = "8.18.0"
+version = "8.18.1"
 description = "Beta backport of SlashCommandsFix"
 
 aliucord {
     changelog.set("""
+        # 8.18.1
+        * Fix role/@everyone denials being ignored in command permission checks
+        * No more network requests while the command list is rendered
+        * Thread-safe index cache; refresh after 10 minutes and on invalid command version (incl. user apps)
+        * Null-safety fixes for missing API data, channels, guilds and error responses
+
         # 8.18.0
         * Don't use custom props anymore (core has them)
 

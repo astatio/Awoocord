@@ -37,7 +37,6 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -107,11 +106,13 @@ final class Patches {
                     return;
                 }
 
-                var applicationIndexSource = Patches.applicationIndexSourceFromContext(this_.$guildId, storeChannelsSelected);
                 try {
+                    var applicationIndexSource = Patches.applicationIndexSourceFromContext(this_.$guildId, storeChannelsSelected);
                     this.passCommandData(this_.this$0, applicationIndexSource, RequestSource.BROWSE);
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
+                } catch (Throwable e) {
+                    // Let Discord's original request run instead
+                    this.logger.error("Failed to load application commands", e);
+                    return;
                 }
 
                 param.setResult(null);
@@ -128,12 +129,14 @@ final class Patches {
                     return;
                 }
 
-                var applicationIndexSource = Patches.applicationIndexSourceFromContext(this_.$guildId, storeChannelsSelected);
                 try {
+                    var applicationIndexSource = Patches.applicationIndexSourceFromContext(this_.$guildId, storeChannelsSelected);
                     storeApplicationCommandsQueryField.set(this_.this$0, this_.$query);
                     this.passCommandData(this_.this$0, applicationIndexSource, RequestSource.QUERY);
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
+                } catch (Throwable e) {
+                    // Let Discord's original request run instead
+                    this.logger.error("Failed to query application commands", e);
+                    return;
                 }
 
                 param.setResult(null);
@@ -154,6 +157,9 @@ final class Patches {
                 var remoteApplicationCommand = (RemoteApplicationCommand) applicationCommand;
 
                 var channel = storeChannelsSelected.getSelectedChannel();
+                if (channel == null) {
+                    return false;
+                }
                 var guildId = channel.i();
 
                 if (guildId == 0) {
@@ -161,26 +167,36 @@ final class Patches {
                     return true;
                 }
 
+                // This check runs while the command list is rendered, so it must never hit
+                // the network. The browse/query hooks fetch the indexes before Discord gets
+                // here; a stale entry is still good enough for filtering (the server
+                // enforces permissions on execution anyway).
                 var applicationId = remoteApplicationCommand.getApplicationId();
-                var isUser = this.requestApplicationIndex(new ApplicationIndexSourceUser())
-                    .applications
-                    .containsKey(applicationId);
+                var isUser = this.applicationIndexCache
+                    .getAny(new ApplicationIndexSourceUser().getEndpoint())
+                    .map(index -> index.applications.containsKey(applicationId))
+                    .orElse(false);
                 if (isUser) {
                     // Allow all user application commands
                     return true;
                 }
-                var application = this.requestApplicationIndex(new ApplicationIndexSourceGuild(guildId))
-                    .applications
-                    .get(applicationId);
+                var application = this.applicationIndexCache
+                    .getAny(new ApplicationIndexSourceGuild(guildId).getEndpoint())
+                    .map(index -> index.applications.get(applicationId))
+                    .orElse(null);
                 if (application == null) {
                     // Discord requested checking a command from the previous guild - ignore
                     // Some such requests are still processed (if the command exists in both guilds), but it's not an issue as the result doesn't matter for them anyways.
                     return false;
                 }
                 var user = storeUsers.getMe();
-                var memberPermissions = storePermissions.getGuildPermissions()
-                    .get(guildId);
                 var guild = storeGuilds.getGuild(guildId);
+                if (user == null || guild == null) {
+                    return false;
+                }
+                // Not computed yet -> treat as no permissions rather than throwing on unboxing
+                Long guildPermissions = storePermissions.getGuildPermissions().get(guildId);
+                long memberPermissions = guildPermissions != null ? guildPermissions : 0L;
 
                 var applicationPermission = application.permissions_.checkFor(roleIds, channel, guild, memberPermissions, user, true);
                 var commandPermission = remoteApplicationCommand.permissions_.checkFor(roleIds, channel, guild, memberPermissions, user, applicationPermission);
@@ -196,51 +212,58 @@ final class Patches {
                 var result = (MessageResult) param.args[0];
                 var localSendData = (ApplicationCommandLocalSendData) param.args[1];
 
-                if (result instanceof MessageResult.UnknownFailure) {
-                    boolean invalidCommandVersion = false;
+                if (!(result instanceof MessageResult.UnknownFailure)) {
+                    return;
+                }
 
-                    try {
-                        var errorResponse = ((MessageResult.UnknownFailure) result)
-                            .getError()
-                            .getResponse();
-                        var error = this.errorResponseErrorField.get(errorResponse);
-                        var subErrors = ((Map<String, Error.SkemaError>) skemaErrorSubErrorsField.get(error));
-                        var dataErrors = (List<Error.SkemaErrorItem>) skemaErrorErrorsField.get(subErrors.get("data"));
+                // Most failures (network errors, other API errors) don't carry this
+                // structure, so bail out quietly at the first missing piece.
+                try {
+                    var error = ((MessageResult.UnknownFailure) result).getError();
+                    var errorResponse = error != null ? error.getResponse() : null;
+                    if (errorResponse == null) return;
+                    var skemaError = this.errorResponseErrorField.get(errorResponse);
+                    if (skemaError == null) return;
+                    var subErrors = (Map<String, Error.SkemaError>) skemaErrorSubErrorsField.get(skemaError);
+                    if (subErrors == null || subErrors.get("data") == null) return;
+                    var dataErrors = (List<Error.SkemaErrorItem>) skemaErrorErrorsField.get(subErrors.get("data"));
+                    if (dataErrors == null) return;
 
-                        for (var dataError: dataErrors) {
-                            var errorCode = (String) this.skemaErrorItemCodeField.get(dataError);
-                            if (errorCode.equals("INTERACTION_APPLICATION_COMMAND_INVALID_VERSION")) {
-                                ApplicationIndexSource applicationIndexSource = null;
-                                var guildId = localSendData.component3();
-                                if (guildId != null) {
-                                    applicationIndexSource = new ApplicationIndexSourceGuild(guildId);
-                                } else {
-                                    var channelId = localSendData.component2();
-                                    applicationIndexSource = new ApplicationIndexSourceDm(channelId);
-                                }
-                                this.cleanApplicationIndexCache(applicationIndexSource);
-
-                                var errorMessage = (String) this.skemaErrorItemMessageField.get(dataError);
-                                Utils.showToast(errorMessage);
-
-                                break;
+                    for (var dataError: dataErrors) {
+                        var errorCode = (String) this.skemaErrorItemCodeField.get(dataError);
+                        if ("INTERACTION_APPLICATION_COMMAND_INVALID_VERSION".equals(errorCode)) {
+                            var guildId = localSendData.component3();
+                            if (guildId != null) {
+                                this.invalidateApplicationIndex(new ApplicationIndexSourceGuild(guildId));
+                            } else {
+                                this.invalidateApplicationIndex(new ApplicationIndexSourceDm(localSendData.component2()));
                             }
+                            // The outdated command may come from a user-installed app as well
+                            this.invalidateApplicationIndex(new ApplicationIndexSourceUser());
+
+                            var errorMessage = (String) this.skemaErrorItemMessageField.get(dataError);
+                            if (errorMessage != null) {
+                                Utils.showToast(errorMessage);
+                            }
+
+                            break;
                         }
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
                     }
+                } catch (Throwable e) {
+                    this.logger.error("Failed to handle application command error", e);
                 }
             })
         );
 
         GatewayAPI.onEvent("GUILD_APPLICATION_COMMAND_INDEX_UPDATE", ApiGuildApplicationCommandIndexUpdate.class, guildApplicationCommandIndexUpdate -> {
-            this.cleanApplicationIndexCache(new ApplicationIndexSourceGuild(guildApplicationCommandIndexUpdate.guildId));
+            this.invalidateApplicationIndex(new ApplicationIndexSourceGuild(guildApplicationCommandIndexUpdate.guildId));
             return null;
         });
     }
 
     private void passCommandData(StoreApplicationCommands storeApplicationCommands, Optional<ApplicationIndexSource> applicationIndexSource, RequestSource requestSource) throws Exception {
-        var applicationIndexes = new ArrayList();
+        // Guild/DM index first: it takes priority over the user index when merging
+        var applicationIndexes = new ArrayList<ApplicationIndex>();
         if (applicationIndexSource.isPresent()) {
             applicationIndexes.add(this.requestApplicationIndex(applicationIndexSource.get()));
         }
@@ -253,44 +276,51 @@ final class Patches {
         applicationIndex.populateCommandCounts(this.applicationCommandCountField);
 
         var applications = new ArrayList<Application>(applicationIndex.applications.values());
-        Collections.sort(applications, (left, right) -> left.getName().compareTo(right.getName()));
+        applications.sort(Comparator.comparing(Application::getName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)));
         applications.add(((BuiltInCommandsProvider) this.storeApplicationCommandsBuiltInCommandsProviderField.get(storeApplicationCommands)).getBuiltInApplication());
         this.handleGuildApplicationsUpdateMethod.invoke(storeApplicationCommands, applications);
 
         switch (requestSource) {
             case BROWSE:
-                this.handleDiscoverCommandsUpdateMethod.invoke(storeApplicationCommands, new ArrayList(applicationIndex.applicationCommands.values()));
+                this.handleDiscoverCommandsUpdateMethod.invoke(storeApplicationCommands, new ArrayList<>(applicationIndex.applicationCommands.values()));
                 break;
 
             case QUERY:
-                this.handleQueryCommandsUpdateMethod.invoke(storeApplicationCommands, new ArrayList(applicationIndex.applicationCommands.values()));
+                this.handleQueryCommandsUpdateMethod.invoke(storeApplicationCommands, new ArrayList<>(applicationIndex.applicationCommands.values()));
                 break;
         }
     }
 
-    private ApplicationIndex requestApplicationIndex(ApplicationIndexSource source) {
-        // Reuse application index from cache
-        var applicationIndex = source.getFromCache(applicationIndexCache);
-        if (!applicationIndex.isPresent()) {
-            try {
-                // Request application index from API
-                applicationIndex = Optional.of(
-                    Http.Request.newDiscordRNRequest(source.getEndpoint())
-                        .execute()
-                        .json(GsonUtils.getGsonRestApi(), ApiApplicationIndex.class)
-                        .toModel()
-                );
-            } catch (Exception e) {
-                throw new RuntimeException(e);
+    /**
+     * Returns the application index for a source, fetching it if it isn't cached or is stale.
+     * Blocks on network, so only call it off the main thread (the store dispatcher).
+     */
+    private ApplicationIndex requestApplicationIndex(ApplicationIndexSource source) throws Exception {
+        var key = source.getEndpoint();
+        var cached = this.applicationIndexCache.getFresh(key);
+        if (cached.isPresent()) {
+            return cached.get();
+        }
+
+        // One request per index at a time; concurrent callers reuse its result
+        synchronized (this.applicationIndexCache.lockFor(key)) {
+            cached = this.applicationIndexCache.getFresh(key);
+            if (cached.isPresent()) {
+                return cached.get();
             }
 
-            source.insertIntoCache(applicationIndexCache, applicationIndex.get());
+            var generation = this.applicationIndexCache.generation(key);
+            var applicationIndex = Http.Request.newDiscordRNRequest(key)
+                .execute()
+                .json(GsonUtils.getGsonRestApi(), ApiApplicationIndex.class)
+                .toModel();
+            this.applicationIndexCache.put(key, applicationIndex, generation);
+            return applicationIndex;
         }
-        return applicationIndex.get();
     }
 
-    private void cleanApplicationIndexCache(ApplicationIndexSource source) {
-        source.removeFromCache(applicationIndexCache);
+    private void invalidateApplicationIndex(ApplicationIndexSource source) {
+        this.applicationIndexCache.invalidate(source.getEndpoint());
     }
 
     private static Optional<ApplicationIndexSource> applicationIndexSourceFromContext(long guildId, StoreChannelsSelected storeChannelsSelected) {
@@ -301,9 +331,10 @@ final class Patches {
         } else {
             // Only create a DM index source for bots
             var channel = storeChannelsSelected.getSelectedChannel();
-            var channelType = channel.D();
-            if (channelType == Channel.DM) {
-                var user = channel.z().get(0);
+            var channelType = channel != null ? channel.D() : -1;
+            var recipients = channel != null ? channel.z() : null;
+            if (channelType == Channel.DM && recipients != null && !recipients.isEmpty()) {
+                var user = recipients.get(0);
                 var userIsBot = Optional.ofNullable(user.e())
                     .orElse(false);
                 if (userIsBot) {

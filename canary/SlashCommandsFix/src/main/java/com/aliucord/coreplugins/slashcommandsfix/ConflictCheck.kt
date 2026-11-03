@@ -22,6 +22,11 @@ object ConflictCheck {
                 Utils.threadPool.execute {
                     Thread.sleep(5000) // wait for app to load guh
                     Utils.mainThread.post {
+                        val activity = Utils.appActivity
+                        if (activity == null) {
+                            Logger("SlashCommandsFixBeta").warn("no activity to show the conflict dialog on")
+                            return@post
+                        }
                         val dialog = ConfirmDialog()
                         dialog
                             .setTitle("SlashCommandsFix Conflict")
@@ -35,11 +40,13 @@ object ConflictCheck {
                                     PluginManager.disablePlugin("ForceSlashCommandsFixNOW")
                                 val ctx = it.context
                                 val intent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
-                                Utils.appActivity.startActivity(Intent.makeRestartActivityTask(intent!!.component))
+                                if (intent?.component != null) {
+                                    activity.startActivity(Intent.makeRestartActivityTask(intent.component))
+                                }
                                 exitProcess(0)
                             }
                             .apply { isCancelable = false }
-                            .show(Utils.appActivity.supportFragmentManager, "SlashCommandsFix conflict")
+                            .show(activity.supportFragmentManager, "SlashCommandsFix conflict")
                     }
                 }
             } else {

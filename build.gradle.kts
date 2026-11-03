@@ -47,7 +47,7 @@ subprojects {
 
     configure<AliucordExtension> {
         author("cilly", 368398754077868032L, hyperlink = false)
-        github("https://github.com/cillynder/Awoocord")
+        github("https://github.com/astatio/Awoocord")
     }
 
     configure<KtlintExtension> {

@@ -21,12 +21,17 @@ class ApplicationIndex {
         this.applicationCommands = applicationCommands;
     }
 
+    /**
+     * Merges indexes. Earlier indexes take priority, so pass the guild/DM index
+     * before the user index: an application present in both keeps its
+     * guild-level permissions instead of the (empty) user-level ones.
+     */
     public ApplicationIndex(List<ApplicationIndex> applicationIndexes) {
-        this.applications = new HashMap();
-        this.applicationCommands = new HashMap();
+        this.applications = new HashMap<>();
+        this.applicationCommands = new HashMap<>();
         for (var applicationIndex: applicationIndexes) {
-            this.applications.putAll(applicationIndex.applications);
-            this.applicationCommands.putAll(applicationIndex.applicationCommands);
+            applicationIndex.applications.forEach(this.applications::putIfAbsent);
+            applicationIndex.applicationCommands.forEach(this.applicationCommands::putIfAbsent);
         }
     }
 
