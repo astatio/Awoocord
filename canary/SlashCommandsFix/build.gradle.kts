@@ -10,6 +10,7 @@ aliucord {
     changelog.set("""
         # 8.18.2
         * Credit astatio as co-author of this fixed build
+        * Log diagnostics for failed commands and localized command names (debug log, tagged [diag])
 
         # 8.18.1
         * Fix role/@everyone denials being ignored in command permission checks

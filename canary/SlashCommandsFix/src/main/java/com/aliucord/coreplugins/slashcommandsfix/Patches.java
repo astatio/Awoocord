@@ -212,7 +212,11 @@ final class Patches {
                 var result = (MessageResult) param.args[0];
                 var localSendData = (ApplicationCommandLocalSendData) param.args[1];
 
+                if (result instanceof MessageResult.Success) {
+                    return;
+                }
                 if (!(result instanceof MessageResult.UnknownFailure)) {
+                    Diagnostics.logCommandFailure(this.logger, result, localSendData, null);
                     return;
                 }
 
@@ -221,6 +225,7 @@ final class Patches {
                 try {
                     var error = ((MessageResult.UnknownFailure) result).getError();
                     var errorResponse = error != null ? error.getResponse() : null;
+                    Diagnostics.logCommandFailure(this.logger, result, localSendData, errorResponse);
                     if (errorResponse == null) return;
                     var skemaError = this.errorResponseErrorField.get(errorResponse);
                     if (skemaError == null) return;
@@ -310,11 +315,13 @@ final class Patches {
             }
 
             var generation = this.applicationIndexCache.generation(key);
-            var applicationIndex = Http.Request.newDiscordRNRequest(key)
+            var json = Http.Request.newDiscordRNRequest(key)
                 .execute()
-                .json(GsonUtils.getGsonRestApi(), ApiApplicationIndex.class)
+                .text();
+            var applicationIndex = GsonUtils.fromJson(GsonUtils.getGsonRestApi(), json, ApiApplicationIndex.class)
                 .toModel();
             this.applicationIndexCache.put(key, applicationIndex, generation);
+            Diagnostics.logIndexShape(this.logger, key, json);
             return applicationIndex;
         }
     }
