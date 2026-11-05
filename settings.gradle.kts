@@ -30,6 +30,7 @@ val plugins = mapOf(
     "Scout" to "plugins/Scout",
     "RoleBlocks" to "plugins/Zinnia",
     "Glance" to "plugins/Myosotis",
+    "VoiceE2EE" to "plugins/VoiceE2EE",
 )
 
 include(*plugins.keys.toTypedArray())
