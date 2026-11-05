@@ -10,12 +10,16 @@ kotlin-stdlib = "1.5.21"
 ktlint = "1.7.1"
 ktlint-plugin = "13.1.0"
 shadow = "8.3.8"
+bouncycastle = "1.86"
+junit = "4.13.2"
 
 [libraries]
 aliucord = { module = "com.aliucord:Aliucord", version.ref = "aliucord" }
 aliuhook = { module = "com.aliucord:Aliuhook", version.ref = "aliuhook" }
 discord = { module = "com.discord:discord", version.ref = "discord" }
 kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin-stdlib" }
+bcmls = { module = "org.bouncycastle:bcmls-jdk18on", version.ref = "bouncycastle" }
+junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]
 aliucord-plugin = { id = "com.aliucord.plugin", version.ref = "aliucord-gradle" }
