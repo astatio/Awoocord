@@ -38,7 +38,7 @@ Fixes:
 
 Fixes slash commands not showing up.
 
-## [VoiceE2EE](plugins/VoiceE2EE)
+## [VoiceE2EE](plugins/VoiceE2EE) | [Download](https://github.com/astatio/Awoocord/raw/builds/VoiceE2EE.zip)
 
 Makes voice work again now that Discord requires end-to-end encryption (DAVE) for calls, DMs, server voice channels and Go Live.
 
