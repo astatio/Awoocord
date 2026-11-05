@@ -16,7 +16,7 @@ aliucord {
         * Initial release: DAVE (MLS group key exchange + frame encryption) for voice calls, server voice channels and Go Live, via a local relay in front of the stock voice engine
     """.trimIndent())
 
-    deploy.set(false)
+    deploy.set(true)
 }
 
 // BouncyCastle's MLS implementation is bundled into the plugin. Only what the plugin actually reaches is kept (R8
