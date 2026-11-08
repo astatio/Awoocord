@@ -326,7 +326,14 @@ internal class VoiceSession(
         sb.append("• Transport: ").append(serverMode).append(" (engine side ").append(r?.localMode ?: localMode()).append(")\n")
         if (r != null) {
             sb.append("• Frames sent ").append(r.sentFrames).append(", dropped ").append(r.droppedSendFrames)
-                .append(" | received ").append(r.receivedFrames).append(", undecryptable ").append(r.failedReceiveFrames)
+                .append(" | received ").append(r.receivedFrames).append(", undecryptable ").append(r.failedReceiveFrames).append('\n')
+            sb.append("• Engine → relay: ").append(r.enginePackets).append(" packets, ").append(r.engineUnreadable)
+                .append(" unreadable, ").append(r.toServer).append(" sent on; layout ").append(r.localLayout).append('\n')
+            sb.append("• Server → relay: ").append(r.serverPackets).append(" packets, ").append(r.serverUnreadable)
+                .append(" unreadable, ").append(r.toEngine).append(" passed to engine")
+            if (r.beforeKey > 0) sb.append("\n• ").append(r.beforeKey).append(" packets before the session key")
+            if (r.unknownPayloadType >= 0) sb.append("\n• Unknown outgoing payload type ").append(r.unknownPayloadType)
+                .append(" (opus ").append(ssrcs.opusPt).append(", VP8 ").append(ssrcs.vp8Pt).append(')')
         } else {
             sb.append("• Media relay not running")
         }
