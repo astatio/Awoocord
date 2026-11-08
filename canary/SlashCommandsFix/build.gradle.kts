@@ -1,7 +1,7 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
 version = "8.18.4"
-description = "Beta backport of SlashCommandsFix. Code improved by Claude"
+description = "Beta backport of SlashCommandsFix"
 
 aliucord {
     // Added after the shared "cilly" author from the root build file
