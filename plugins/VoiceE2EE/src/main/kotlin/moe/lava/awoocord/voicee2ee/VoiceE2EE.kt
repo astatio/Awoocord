@@ -32,7 +32,9 @@ import f0.x as OkHttpClient
 class VoiceE2EE : Plugin() {
     private val sessions: MutableMap<Any, VoiceSession> = Collections.synchronizedMap(WeakHashMap())
 
-    private fun localMode(): String = settings.getString(SETTING_ENGINE_MODE, TransportCipher.AES256_GCM)
+    // xsalsa20_poly1305_lite_rtpsize is the mode Discord 126.21's engine handles correctly on the local leg (tested
+    // on a real call); its aead_aes256_gcm_rtpsize support didn't carry audio either way.
+    private fun localMode(): String = settings.getString(SETTING_ENGINE_MODE, TransportCipher.XSALSA20_LITE)
 
     override fun start(context: Context) {
         hookConnect()
@@ -55,7 +57,7 @@ class VoiceE2EE : Plugin() {
             "voicee2ee-engine-mode",
             "Switch how the voice engine talks to the local relay (applies to the next call)",
         ) {
-            val next = if (localMode() == TransportCipher.AES256_GCM) TransportCipher.XSALSA20_LITE else TransportCipher.AES256_GCM
+            val next = if (localMode() == TransportCipher.XSALSA20_LITE) TransportCipher.AES256_GCM else TransportCipher.XSALSA20_LITE
             settings.setString(SETTING_ENGINE_MODE, next)
             CommandsAPI.CommandResult("Engine transport mode is now `$next`; rejoin the call to apply it.", null, false)
         }
@@ -214,6 +216,7 @@ class VoiceE2EE : Plugin() {
     }
 
     companion object {
-        private const val SETTING_ENGINE_MODE = "engineMode"
+        // new key in 0.1.1 so everyone starts on the new default (0.1.0's AES default didn't work)
+        private const val SETTING_ENGINE_MODE = "engineModeV2"
     }
 }
