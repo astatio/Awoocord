@@ -26,6 +26,13 @@ object Rtp {
     fun hasPadding(p: ByteArray) = p[0].toInt() and 0x20 != 0
     private fun csrcCount(p: ByteArray) = p[0].toInt() and 0x0F
 
+    /** Bytes left unencrypted by the non-"rtpsize" modes: the fixed header and CSRCs only (8 for RTCP). */
+    fun fixedHeaderLen(p: ByteArray, len: Int): Int {
+        if (isRtcp(p)) return 8
+        val n = 12 + 4 * csrcCount(p)
+        return if (n <= len) n else -1
+    }
+
     /** Bytes left unencrypted by the "rtpsize" modes: fixed header, CSRCs and the 4 byte extension header. */
     fun rtpsizeHeaderLen(p: ByteArray, len: Int): Int {
         if (isRtcp(p)) return 8
@@ -46,12 +53,19 @@ object Rtp {
  * [Rtp.rtpsizeHeaderLen]) stays clear, everything after it is encrypted, and a 32 bit nonce counter is appended.
  * Implementations are not thread safe.
  */
-abstract class TransportCipher {
-    private var counter = 0L
+abstract class TransportCipher(
+    /** false: only the fixed header + CSRCs stay clear (the extension header is encrypted too). */
+    private val rtpsizeHeader: Boolean = true,
+) {
+    /** Last nonce used by [seal]; carried over when a cipher for the same key is replaced. */
+    var counter = 0L
+
+    private fun clearHeaderLen(p: ByteArray, len: Int) =
+        if (rtpsizeHeader) Rtp.rtpsizeHeaderLen(p, len) else Rtp.fixedHeaderLen(p, len)
 
     /** Decrypts [len] bytes of [packet]; returns header + plaintext, or null when it doesn't authenticate. */
-    fun open(packet: ByteArray, len: Int): ByteArray? {
-        val hdr = Rtp.rtpsizeHeaderLen(packet, len)
+    open fun open(packet: ByteArray, len: Int): ByteArray? {
+        val hdr = clearHeaderLen(packet, len)
         if (hdr < 0 || len < hdr + overhead()) return null
         val nonce = packet.copyOfRange(len - 4, len)
         val pt = decrypt(packet.copyOfRange(0, hdr), packet.copyOfRange(hdr, len - 4), nonce) ?: return null
@@ -62,8 +76,8 @@ abstract class TransportCipher {
     }
 
     /** Encrypts a plain packet (header + payload) with the next nonce; returns the wire packet. */
-    fun seal(plain: ByteArray): ByteArray {
-        val hdr = Rtp.rtpsizeHeaderLen(plain, plain.size)
+    open fun seal(plain: ByteArray): ByteArray {
+        val hdr = clearHeaderLen(plain, plain.size)
         counter = (counter + 1) and 0xFFFFFFFFL
         val nonce = ByteArray(4)
         Bytes.putU32(nonce, 0, counter)
@@ -89,24 +103,54 @@ abstract class TransportCipher {
             XSALSA20_LITE -> XSalsaLiteRtpSize(key)
             else -> null
         }
+
+        /**
+         * Layouts Discord 126.21's engine might actually use on the local leg when told [mode], the documented one
+         * first. The relay tries the others when the engine's packets don't open with the documented one; an
+         * authenticated (AEAD) open can't succeed with the wrong layout, so a match is conclusive.
+         */
+        fun localVariants(mode: String, key: ByteArray): List<Pair<String, TransportCipher>> = when (mode) {
+            AES256_GCM -> listOf(
+                "rtpsize, nonce first" to AesGcmRtpSize(key),
+                "rtpsize, nonce last" to AesGcmRtpSize(key, noncePos = 8),
+                "fixed header, nonce first" to AesGcmRtpSize(key, rtpsizeHeader = false),
+                "fixed header, nonce last" to AesGcmRtpSize(key, noncePos = 8, rtpsizeHeader = false),
+            )
+            XSALSA20_LITE -> listOf(
+                "rtpsize" to XSalsaLiteRtpSize(key),
+                "fixed header" to XSalsaLiteRtpSize(key, rtpsizeHeader = false),
+            )
+            else -> listOfNotNull(create(mode, key)?.let { "default" to it })
+        }
     }
 }
 
-/** aead_aes256_gcm_rtpsize: AES-256-GCM, 12 byte nonce = 32 bit big-endian counter then zeros, AAD = header. */
-class AesGcmRtpSize(key: ByteArray) : TransportCipher() {
+/** No transport encryption: what an engine that didn't accept the requested mode would send. Detection only. */
+class PlainTransport : TransportCipher() {
+    override fun open(packet: ByteArray, len: Int): ByteArray? = packet.copyOf(len)
+    override fun seal(plain: ByteArray): ByteArray = plain
+    override fun encrypt(header: ByteArray, plaintext: ByteArray, nonce4: ByteArray) = plaintext
+    override fun decrypt(header: ByteArray, ciphertext: ByteArray, nonce4: ByteArray) = ciphertext
+}
+
+/**
+ * aead_aes256_gcm_rtpsize: AES-256-GCM, 12 byte nonce = 32 bit big-endian counter then zeros, AAD = header.
+ * [noncePos] / [rtpsizeHeader] only differ for probing what the old engine does (see [TransportCipher.localVariants]).
+ */
+class AesGcmRtpSize(key: ByteArray, private val noncePos: Int = 0, rtpsizeHeader: Boolean = true) : TransportCipher(rtpsizeHeader) {
     private val keySpec = SecretKeySpec(key, "AES")
     private val cipher = Cipher.getInstance("AES/GCM/NoPadding")
     private val nonce = ByteArray(12)
 
     override fun encrypt(header: ByteArray, plaintext: ByteArray, nonce4: ByteArray): ByteArray {
-        System.arraycopy(nonce4, 0, nonce, 0, 4)
+        System.arraycopy(nonce4, 0, nonce, noncePos, 4)
         cipher.init(Cipher.ENCRYPT_MODE, keySpec, GCMParameterSpec(128, nonce))
         cipher.updateAAD(header)
         return cipher.doFinal(plaintext)
     }
 
     override fun decrypt(header: ByteArray, ciphertext: ByteArray, nonce4: ByteArray): ByteArray? {
-        System.arraycopy(nonce4, 0, nonce, 0, 4)
+        System.arraycopy(nonce4, 0, nonce, noncePos, 4)
         return try {
             cipher.init(Cipher.DECRYPT_MODE, keySpec, GCMParameterSpec(128, nonce))
             cipher.updateAAD(header)
@@ -187,7 +231,7 @@ class XChaChaRtpSize(private val key: ByteArray) : TransportCipher() {
  * xsalsa20_poly1305_lite_rtpsize (NaCl secretbox, 24 byte nonce = 32 bit big-endian counter then zeros, no AAD).
  * Retired by Discord's servers but still understood by Discord 126.21's engine; only offered for the local leg.
  */
-class XSalsaLiteRtpSize(private val key: ByteArray) : TransportCipher() {
+class XSalsaLiteRtpSize(private val key: ByteArray, rtpsizeHeader: Boolean = true) : TransportCipher(rtpsizeHeader) {
     private val salsa = XSalsa20Engine()
     private val mac = Poly1305()
 

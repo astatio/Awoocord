@@ -45,7 +45,7 @@ Makes voice work again now that Discord requires end-to-end encryption (DAVE) fo
 - The voice gateway (Java in 126.21) is upgraded to v8 and runs DAVE's MLS key exchange (BouncyCastle `bcmls`, bundled)
 - The stock native voice engine is kept and pointed at a local UDP relay, which adds/removes DAVE frame encryption (Opus and VP8) and re-encrypts the transport with `aead_aes256_gcm_rtpsize` (or `aead_xchacha20_poly1305_rtpsize`)
 - Video is offered as VP8 only (DAVE needs per-codec handling; the call then uses VP8 for everyone)
-- `/voicee2ee` shows the call's E2EE status and voice privacy code; `/voicee2ee-engine-mode` switches the engine-to-relay transport mode if audio doesn't flow
+- `/voicee2ee` shows the call's E2EE status and voice privacy code; `/voicee2ee-engine-mode` switches how the engine talks to the local relay (default `xsalsa20_poly1305_lite_rtpsize`, the one that works with 126.21's engine)
 
 Untested against Discord's live servers so far; please report how it goes.
 

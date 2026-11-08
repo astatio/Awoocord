@@ -1,4 +1,4 @@
-version = "0.1.0"
+version = "0.1.1"
 description = "End-to-end encrypted (DAVE) voice and video, so calls work again now that Discord requires it"
 
 android {
@@ -12,6 +12,11 @@ aliucord {
     author("astatio", hyperlink = false)
 
     changelog.set("""
+        # 0.1.1
+        * Fix voice: the engine now talks to the local relay with xsalsa20_poly1305_lite_rtpsize by default, the mode it handles correctly (aead_aes256_gcm_rtpsize carried no audio either way). Calls to Discord stay on AES-GCM / XChaCha20
+        * Detect how the voice engine encrypts its side of the local relay instead of assuming one layout
+        * /voicee2ee shows packet counts for each direction and the detected engine layout
+
         # 0.1.0
         * Initial release: DAVE (MLS group key exchange + frame encryption) for voice calls, server voice channels and Go Live, via a local relay in front of the stock voice engine
     """.trimIndent())

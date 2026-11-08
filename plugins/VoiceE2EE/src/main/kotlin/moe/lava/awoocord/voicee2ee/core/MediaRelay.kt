@@ -56,15 +56,34 @@ class MediaRelay(
     @Volatile private var engine: SocketAddress? = null
     @Volatile private var serverMode: String? = null
     @Volatile private var serverKey: ByteArray? = null
-    @Volatile private var keyGeneration = 0
+    @Volatile private var serverGeneration = 0
     @Volatile var closed = false
         private set
+
+    // Engine-side layout: see TransportCipher.localVariants. Index == variants.size means "no encryption".
+    private val variantNames = TransportCipher.localVariants(localMode, localKey).map { it.first } + "unencrypted"
+    @Volatile private var localVariant = 0
+    @Volatile private var localGeneration = 0
+    @Volatile private var variantSettled = false
+    private var plainLooking = 0
+    val localLayout: String get() = variantNames[localVariant] + if (variantSettled) "" else " (unconfirmed)"
+
+    private fun localCipher(variant: Int): TransportCipher =
+        if (variant >= variantNames.size - 1) PlainTransport() else TransportCipher.localVariants(localMode, localKey)[variant].second
 
     // stats for /voicee2ee
     @Volatile var sentFrames = 0L; private set
     @Volatile var droppedSendFrames = 0L; private set
     @Volatile var receivedFrames = 0L; private set
     @Volatile var failedReceiveFrames = 0L; private set
+    @Volatile var enginePackets = 0L; private set
+    @Volatile var engineUnreadable = 0L; private set
+    @Volatile var toServer = 0L; private set
+    @Volatile var serverPackets = 0L; private set
+    @Volatile var serverUnreadable = 0L; private set
+    @Volatile var toEngine = 0L; private set
+    @Volatile var beforeKey = 0L; private set
+    @Volatile var unknownPayloadType = -1; private set
 
     private val outVideo = OutgoingVideo { frame -> dave.encryptor.encrypt(Codec.VP8, frame) }
     private val inVideo = IncomingVideo(clock) { ssrc, frame -> decryptFrame(ssrc, false, frame) }
@@ -83,7 +102,7 @@ class MediaRelay(
     fun setServerKey(mode: String, key: ByteArray) {
         serverMode = mode
         serverKey = key.clone()
-        keyGeneration++
+        serverGeneration++
         log("server transport: $mode, engine transport: $localMode")
     }
 
@@ -95,11 +114,13 @@ class MediaRelay(
 
     private fun pump(up: Boolean) {
         val inSocket = if (up) localSocket else remoteSocket
+        val outSocket = if (up) remoteSocket else localSocket
         val buf = ByteArray(4096)
         val packet = DatagramPacket(buf, buf.size)
-        var openCipher: TransportCipher? = null
-        var sealCipher: TransportCipher? = null
-        var seenGeneration = -1
+        var local: TransportCipher? = null
+        var remote: TransportCipher? = null
+        var seenLocal = -1
+        var seenServer = -1
         while (!closed) {
             try {
                 packet.setData(buf, 0, buf.size)
@@ -111,35 +132,91 @@ class MediaRelay(
                     continue
                 }
                 val target = (if (up) server else engine) ?: continue
-                val outSocket = if (up) remoteSocket else localSocket
 
                 if (!Rtp.isRtpOrRtcp(buf, len)) { // IP discovery etc.
                     outSocket.send(DatagramPacket(buf, 0, len, target))
                     continue
                 }
-                if (seenGeneration != keyGeneration) {
-                    val key = serverKey ?: continue // nothing can be relayed before the session description
-                    val mode = serverMode ?: continue
-                    seenGeneration = keyGeneration
-                    val local = TransportCipher.create(localMode, localKey)
-                    val remote = TransportCipher.create(mode, key)
-                    if (local == null || remote == null) {
-                        log("unsupported transport mode ${if (local == null) localMode else mode}")
+                if (up) enginePackets++ else serverPackets++
+                if (seenServer != serverGeneration) {
+                    val key = serverKey
+                    val mode = serverMode
+                    if (key == null || mode == null) { // nothing can be relayed before the session description
+                        beforeKey++
                         continue
                     }
-                    openCipher = if (up) local else remote
-                    sealCipher = if (up) remote else local
+                    remote = TransportCipher.create(mode, key) ?: run {
+                        log("unsupported server transport mode $mode")
+                        null
+                    }
+                    seenServer = serverGeneration
                 }
-                val plain = openCipher!!.open(buf, len) ?: continue
+                if (seenLocal != localGeneration) {
+                    val next = localCipher(localVariant)
+                    local?.let { next.counter = it.counter } // never reuse a nonce under the local key
+                    local = next
+                    seenLocal = localGeneration
+                }
+                val r = remote ?: continue
+                val l = local!!
+                val opener = if (up) l else r
+                val sealer = if (up) r else l
+
+                var plain = opener.open(buf, len)
+                if (plain == null) {
+                    if (up) {
+                        engineUnreadable++
+                        if (engineUnreadable <= 5) log("unreadable engine packet: ${len}B ${Bytes.hex(buf, 16)}")
+                        plain = probeEngineLayout(buf, len)
+                    } else {
+                        serverUnreadable++
+                        if (serverUnreadable <= 5) log("unreadable server packet: ${len}B ${Bytes.hex(buf, 16)}")
+                    }
+                    if (plain == null) continue
+                } else if (up && !variantSettled) {
+                    variantSettled = true
+                    log("engine transport layout: ${variantNames[localVariant]}")
+                }
                 val outPackets = if (Rtp.isRtcp(plain)) listOf(plain) else if (up) outgoing(plain) else incoming(plain)
                 for (p in outPackets) {
-                    val wire = sealCipher!!.seal(p)
+                    val wire = sealer.seal(p)
                     outSocket.send(DatagramPacket(wire, wire.size, target))
+                    if (up) toServer++ else toEngine++
                 }
             } catch (e: Exception) {
                 if (!closed) log("relay ${if (up) "up" else "down"}: $e")
             }
         }
+    }
+
+    /**
+     * The engine's packet didn't open with the layout in use: try the other layouts it might use. An authenticated
+     * open is conclusive and switches both directions; "unencrypted" is only assumed after many packets that open
+     * with nothing but look like plain RTP/RTCP from this engine.
+     */
+    private fun probeEngineLayout(buf: ByteArray, len: Int): ByteArray? {
+        if (variantSettled) return null
+        val variants = TransportCipher.localVariants(localMode, localKey)
+        for ((i, v) in variants.withIndex()) {
+            if (i == localVariant) continue
+            val plain = v.second.open(buf, len) ?: continue
+            switchLayout(i)
+            return plain
+        }
+        val looksPlain = Rtp.isRtcp(buf) || Rtp.payloadType(buf) == ssrcs.opusPt || Rtp.ssrc(buf) == ssrcs.ownAudioSsrc ||
+            ssrcs.ownVideo.containsKey(Rtp.ssrc(buf))
+        if (looksPlain && ++plainLooking >= PLAIN_EVIDENCE) {
+            switchLayout(variantNames.size - 1)
+            return buf.copyOf(len)
+        }
+        return null
+    }
+
+    private fun switchLayout(variant: Int) {
+        localVariant = variant
+        variantSettled = true
+        localGeneration++
+        log("engine transport layout detected: ${variantNames[variant]}")
     }
 
     // region outgoing (engine -> Discord)
@@ -165,7 +242,10 @@ class MediaRelay(
                 synchronized(outVideo) { listOfNotNull(outVideo.onRtx(parts, media)) }
             }
             pt == ssrcs.vp8Pt -> synchronized(outVideo) { outVideo.onPacket(parts) }.also { sentFrames += if (it.isEmpty()) 0 else 1 }
-            else -> emptyList() // never let an unencrypted media frame of an unknown codec out
+            else -> {
+                unknownPayloadType = pt
+                emptyList() // never let an unencrypted media frame of an unknown codec out
+            }
         }
     }
 
@@ -209,4 +289,8 @@ class MediaRelay(
     }
 
     // endregion
+
+    companion object {
+        private const val PLAIN_EVIDENCE = 25
+    }
 }

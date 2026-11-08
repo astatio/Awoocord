@@ -90,7 +90,7 @@ class RelayTest {
                     sfu.send(DatagramPacket(buf, 0, p.length, p.socketAddress)) // echo "discovery"
                     continue
                 }
-                val plain = openA.open(buf, p.length) ?: error("SFU could not open relay A's packet")
+                val plain = openA.open(buf, p.length) ?: continue // e.g. relay B's own RTCP
                 if (Rtp.payloadType(plain) == vp8Pt && dropOnce.remove(Rtp.seq(plain))) continue
                 val target = relayBRemote ?: continue
                 val wire = sealB.seal(plain)
@@ -173,5 +173,55 @@ class RelayTest {
             .reduce { a, b -> a + b }
         assertArrayEquals("the frame arrives decrypted, footer removed", frame, reassembled)
         assertTrue(got.last().marker)
+    }
+
+    private fun sendFromEngineA(cipher: TransportCipher, plain: ByteArray) {
+        val wire = cipher.seal(plain)
+        engineA.send(DatagramPacket(wire, wire.size, InetSocketAddress("127.0.0.1", relayA.localPort)))
+    }
+
+    @Test
+    fun engineLayoutIsDetectedForOutgoingAudio() {
+        // engine A encrypts its side with a layout other than the documented one
+        val engine = XSalsaLiteRtpSize(relayA.localKey, rtpsizeHeader = false)
+        repeat(3) { i ->
+            val opus = bytes(70)
+            sendFromEngineA(engine, rtp(120, audioSsrcA, 40 + i, 960L * i, false, opus, ext = true))
+            assertArrayEquals(opus, engineBReceive().payload)
+        }
+        assertEquals("fixed header", relayA.localLayout)
+        assertEquals(1L, relayA.engineUnreadable) // only the first packet needed probing
+    }
+
+    @Test
+    fun detectedLayoutIsAlsoUsedTowardsTheEngine() {
+        // engine B uses AES-GCM with the counter at the end of the nonce; its first RTCP packet reveals that
+        val engineB2 = AesGcmRtpSize(relayB.localKey, noncePos = 8)
+        val rr = ByteArray(8).also { it[0] = 0x80.toByte(); it[1] = 201.toByte(); Bytes.putU16(it, 2, 1) }
+        val wire = engineB2.seal(rr)
+        engineB.send(DatagramPacket(wire, wire.size, InetSocketAddress("127.0.0.1", relayB.localPort)))
+        Thread.sleep(200)
+        assertEquals("rtpsize, nonce last", relayB.localLayout)
+        val opus = bytes(50)
+        engineASend(rtp(120, audioSsrcA, 7, 960, false, opus))
+        val p = DatagramPacket(ByteArray(4096), 4096)
+        engineB.receive(p)
+        val plain = engineB2.open(p.data, p.length) ?: error("engine B can't read the relay with its own layout")
+        assertArrayEquals(opus, RtpParts.parse(plain)!!.payload)
+    }
+
+    @Test
+    fun unencryptedEngineIsDetectedAfterEnoughEvidence() {
+        val opus = bytes(40)
+        repeat(30) { i -> engineA.send(rtp(120, audioSsrcA, 100 + i, 960L * i, false, opus).let {
+            DatagramPacket(it, it.size, InetSocketAddress("127.0.0.1", relayA.localPort))
+        }) }
+        var got = 0
+        try {
+            while (true) { assertArrayEquals(opus, engineBReceive().payload); got++ }
+        } catch (_: SocketTimeoutException) {
+        }
+        assertEquals("unencrypted", relayA.localLayout)
+        assertTrue("frames flow once detected ($got)", got >= 5)
     }
 }
